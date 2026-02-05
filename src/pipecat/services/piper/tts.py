@@ -154,7 +154,9 @@ class PiperHttpTTSService(TTSService):
         *,
         base_url: str,
         aiohttp_session: aiohttp.ClientSession,
+        sample_rate: Optional[int] = None,
         voice_id: Optional[str] = None,
+        speed: float = 1,
         **kwargs,
     ):
         """Initialize the Piper TTS service.
@@ -163,6 +165,9 @@ class PiperHttpTTSService(TTSService):
             base_url: Base URL for the Piper TTS HTTP server.
             aiohttp_session: aiohttp ClientSession for making HTTP requests.
             voice_id: Piper voice model identifier (e.g. `en_US-ryan-high`).
+            aiohttp_session: aiohttp ClientSession for making HTTP requests.
+            sample_rate: Output sample rate. If None, uses the voice model's native rate.
+            speed: Speed adjustment for speech synthesis.
             **kwargs: Additional arguments passed to the parent TTSService.
         """
         super().__init__(**kwargs)
@@ -174,12 +179,14 @@ class PiperHttpTTSService(TTSService):
         self._base_url = base_url
         self._session = aiohttp_session
         self._model_id = voice_id
+        self._settings = {"base_url": base_url}
+        self._speed = speed
 
     def can_generate_metrics(self) -> bool:
         """Check if this service can generate processing metrics.
 
         Returns:
-            True, as Piper service supports metrics generation.
+                True, as Piper service supports metrics generation.
         """
         return True
 
@@ -191,7 +198,7 @@ class PiperHttpTTSService(TTSService):
             text: The text to convert to speech.
 
         Yields:
-            Frame: Audio frames containing the synthesized speech and status frames.
+                Frame: Audio frames containing the synthesized speech and status frames.
         """
         logger.debug(f"{self}: Generating TTS [{text}]")
         headers = {
@@ -200,12 +207,15 @@ class PiperHttpTTSService(TTSService):
         try:
             await self.start_ttfb_metrics()
 
-            data = {
-                "text": text,
-                "voice": self._model_id,
-            }
-
-            async with self._session.post(self._base_url, json=data, headers=headers) as response:
+            async with self._session.post(
+                self._base_url,
+                json={
+                    "text": text,
+                    "voice": self._voice_id,
+                    "length_scale": self._speed,
+                },
+                headers=headers,
+            ) as response:
                 if response.status != 200:
                     error = await response.text()
                     yield ErrorFrame(
