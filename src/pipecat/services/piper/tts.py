@@ -154,9 +154,9 @@ class PiperHttpTTSService(TTSService):
         *,
         base_url: str,
         aiohttp_session: aiohttp.ClientSession,
-		sample_rate: Optional[int] = None,
+        sample_rate: Optional[int] = None,
         voice_id: Optional[str] = None,
-		speed: float = 1,
+        speed: float = 1,
         **kwargs,
     ):
         """Initialize the Piper TTS service.
