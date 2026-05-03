@@ -145,9 +145,17 @@ class DeepgramFluxSageMakerSTTService(DeepgramFluxSTTBase):
     # ------------------------------------------------------------------
 
     async def _transport_send_audio(self, audio: bytes):
+        if (
+            self._client is None
+        ):  # should never happen — caller should gate on _transport_is_active()
+            return
         await self._client.send_audio_chunk(audio)
 
     async def _transport_send_json(self, message: dict):
+        if (
+            self._client is None
+        ):  # should never happen — caller should gate on _transport_is_active()
+            return
         await self._client.send_json(message)
 
     def _transport_is_active(self) -> bool:
@@ -222,7 +230,7 @@ class DeepgramFluxSageMakerSTTService(DeepgramFluxSTTBase):
     # Audio sending and response receiving
     # ------------------------------------------------------------------
 
-    async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
+    async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame | None, None]:
         """Send audio data to Deepgram Flux for transcription.
 
         Args:

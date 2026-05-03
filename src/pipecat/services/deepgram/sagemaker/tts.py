@@ -325,7 +325,7 @@ class DeepgramSageMakerTTSService(TTSService):
                 logger.error(f"{self} error sending Flush message: {e}")
 
     @traced_tts
-    async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
+    async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
         """Generate speech from text using Deepgram TTS on SageMaker.
 
         Args:
@@ -337,6 +337,10 @@ class DeepgramSageMakerTTSService(TTSService):
             the response processor).
         """
         logger.debug(f"{self}: Generating TTS [{text}]")
+        if self._client is None:
+            logger.warning(f"{self}: client unavailable, skipping TTS")
+            yield ErrorFrame(error="client unavailable")
+            return
         try:
             await self._client.send_json({"type": "Speak", "text": text})
             yield None

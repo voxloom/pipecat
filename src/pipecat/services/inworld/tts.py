@@ -72,8 +72,8 @@ class InworldTTSSettings(TTSSettings):
         temperature: Temperature for speech synthesis.
     """
 
-    speaking_rate: float | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
-    temperature: float | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    speaking_rate: float | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    temperature: float | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
 
     _aliases: ClassVar[dict[str, str]] = {
         "voiceId": "voice",
@@ -283,7 +283,7 @@ class InworldHttpTTSService(TTSService):
         return (word_times, chunk_end_time)
 
     @traced_tts
-    async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
+    async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
         """Generate TTS audio for the given text.
 
         Args:
@@ -410,7 +410,9 @@ class InworldHttpTTSService(TTSService):
                         word_times, chunk_end_time = self._calculate_word_times(timestamp_info)
                         if word_times:
                             self._current_run_had_timestamps = True
-                            await self.add_word_timestamps(word_times, context_id)
+                            await self.add_word_timestamps(
+                                word_times, context_id, includes_inter_frame_spaces=True
+                            )
                         # Track the maximum end time across all chunks
                         utterance_duration = max(utterance_duration, chunk_end_time)
 
@@ -447,7 +449,9 @@ class InworldHttpTTSService(TTSService):
             word_times, chunk_end_time = self._calculate_word_times(timestamp_info)
             if word_times:
                 self._current_run_had_timestamps = True
-                await self.add_word_timestamps(word_times, context_id)
+                await self.add_word_timestamps(
+                    word_times, context_id, includes_inter_frame_spaces=True
+                )
             utterance_duration = chunk_end_time
 
         audio_data = base64.b64decode(response_data["audioContent"])
@@ -790,8 +794,10 @@ class InworldTTSService(WebsocketTTSService):
 
         return word_times
 
-    async def _close_context(self, context_id: str):
-        if context_id and self._websocket:
+    async def _close_context(self, context_id: str | None):
+        if not context_id:
+            return
+        if self._websocket:
             logger.info(f"{self}: Closing context {context_id} due to interruption or completion")
             try:
                 await self._send_close_context(context_id)
@@ -1013,7 +1019,9 @@ class InworldTTSService(WebsocketTTSService):
                 if word_times:
                     if ctx_id:
                         self._contexts_with_timestamps.add(ctx_id)
-                    await self.add_word_timestamps(word_times, ctx_id)
+                    await self.add_word_timestamps(
+                        word_times, ctx_id, includes_inter_frame_spaces=True
+                    )
 
             # Handle flush completion, which indicates the end of a generation
             if "flushCompleted" in result:
@@ -1128,7 +1136,7 @@ class InworldTTSService(WebsocketTTSService):
         await self.send_with_retry(json.dumps(msg), self._report_error)
 
     @traced_tts
-    async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
+    async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
         """Generate TTS audio for the given text using the Inworld WebSocket TTS service.
 
         Args:

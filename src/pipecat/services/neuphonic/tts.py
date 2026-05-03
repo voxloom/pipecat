@@ -44,14 +44,17 @@ except ModuleNotFoundError as e:
     raise Exception(f"Missing module: {e}")
 
 
-def language_to_neuphonic_lang_code(language: Language) -> str | None:
+def language_to_neuphonic_lang_code(language: Language) -> str:
     """Convert a Language enum to Neuphonic language code.
 
     Args:
         language: The Language enum value to convert.
 
     Returns:
-        The corresponding Neuphonic language code, or None if not supported.
+        The corresponding service language code. If ``language`` is not in
+        the verified mapping, falls back to the base language code (e.g.,
+        ``en`` from ``en-US``) and logs a warning (via
+        ``resolve_language(..., use_base_code=True)``).
     """
     LANGUAGE_MAP = {
         Language.DE: "de",
@@ -328,7 +331,10 @@ class NeuphonicTTSService(InterruptibleTTSService):
 
     async def _receive_messages(self):
         """Receive and process messages from Neuphonic WebSocket."""
-        async for message in self._websocket:
+        websocket = self._websocket
+        if websocket is None:
+            return
+        async for message in websocket:
             if isinstance(message, str):
                 msg = json.loads(message)
                 if msg.get("data") and msg["data"].get("audio"):
@@ -366,7 +372,7 @@ class NeuphonicTTSService(InterruptibleTTSService):
             await self._websocket.send(json.dumps(msg))
 
     @traced_tts
-    async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
+    async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
         """Generate speech from text using Neuphonic's streaming API.
 
         Args:
@@ -565,7 +571,7 @@ class NeuphonicHttpTTSService(TTSService):
             return None
 
     @traced_tts
-    async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
+    async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
         """Generate speech from text using Neuphonic streaming API.
 
         Args:

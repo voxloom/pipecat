@@ -61,7 +61,7 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.google.frames import LLMSearchOrigin, LLMSearchResponseFrame, LLMSearchResult
 from pipecat.services.google.utils import update_google_client_http_options
 from pipecat.services.llm_service import FunctionCallFromLLM, LLMService
-from pipecat.services.settings import NOT_GIVEN, LLMSettings, _NotGiven
+from pipecat.services.settings import NOT_GIVEN, LLMSettings, _NotGiven, assert_given
 from pipecat.transcriptions.language import Language, resolve_language
 from pipecat.utils.string import match_endofsentence
 from pipecat.utils.time import time_now_iso8601
@@ -78,6 +78,7 @@ try:
         AudioTranscriptionConfig,
         AutomaticActivityDetection,
         Blob,
+        Content,
         ContextWindowCompressionConfig,
         EndSensitivity,
         FunctionResponse,
@@ -89,6 +90,7 @@ try:
         LiveServerMessage,
         MediaResolution,
         Modality,
+        Part,
         ProactivityConfig,
         RealtimeInputConfig,
         SessionResumptionConfig,
@@ -109,7 +111,7 @@ MAX_CONSECUTIVE_FAILURES = 3
 CONNECTION_ESTABLISHED_THRESHOLD = 10.0  # seconds
 
 
-def language_to_gemini_language(language: Language) -> str | None:
+def language_to_gemini_language(language: Language) -> str:
     """Maps a Language enum value to a Gemini Live supported language code.
 
     Source:
@@ -119,7 +121,9 @@ def language_to_gemini_language(language: Language) -> str | None:
         language: The language enum value to convert.
 
     Returns:
-        The Gemini language code string, or None if the language is not supported.
+        The Gemini language code string. If ``language`` is not in the
+        verified mapping, falls back to the full language code string and logs
+        a warning (via ``resolve_language(..., use_base_code=False)``).
     """
     LANGUAGE_MAP = {
         # Arabic
@@ -340,7 +344,7 @@ class GeminiLiveLLMSettings(LLMSettings):
     modalities: GeminiModalities | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
     language: Language | str | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
     media_resolution: GeminiMediaResolution | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
-    vad: GeminiVADParams | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    vad: GeminiVADParams | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
     context_window_compression: ContextWindowCompressionParams | dict | _NotGiven = field(
         default_factory=lambda: NOT_GIVEN
     )
@@ -349,7 +353,7 @@ class GeminiLiveLLMSettings(LLMSettings):
     proactivity: ProactivityConfig | dict | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
 
 
-class GeminiLiveLLMService(LLMService):
+class GeminiLiveLLMService(LLMService[GeminiLLMAdapter]):
     """Provides access to Google's Gemini Live API.
 
     This service enables real-time conversations with Gemini, supporting both
@@ -366,7 +370,7 @@ class GeminiLiveLLMService(LLMService):
     @property
     def _is_gemini_3(self) -> bool:
         """Check if the current model is a Gemini 3.x model."""
-        return "gemini-3" in (self._settings.model or "")
+        return "gemini-3" in (assert_given(self._settings.model) or "")
 
     def __init__(
         self,
@@ -480,9 +484,10 @@ class GeminiLiveLLMService(LLMService):
             default_settings.apply_update(settings)
 
         # Warn if user requested TEXT modality
-        if default_settings.modalities == GeminiModalities.TEXT:
+        default_modalities = assert_given(default_settings.modalities)
+        if default_modalities == GeminiModalities.TEXT:
             logger.warning(
-                f"Modality {default_settings.modalities.value!r} may not be supported by recent "
+                f"Modality {default_modalities.value!r} may not be supported by recent "
                 "Gemini Live models."
             )
 
@@ -522,13 +527,12 @@ class GeminiLiveLLMService(LLMService):
 
         self._sample_rate = 24000
 
-        self._language = self._settings.language
+        self._language = assert_given(self._settings.language)
         self._language_code = (
-            language_to_gemini_language(self._settings.language)
-            if self._settings.language
-            else "en-US"
+            language_to_gemini_language(self._language) if self._language else "en-US"
         )
-        self._vad_disabled = bool(self._settings.vad and self._settings.vad.disabled)
+        vad_settings = assert_given(self._settings.vad)
+        self._vad_disabled = bool(vad_settings and vad_settings.disabled)
 
         # Reconnection tracking
         self._consecutive_failures = 0
@@ -776,9 +780,9 @@ class GeminiLiveLLMService(LLMService):
             # init-provided values). Note that the determination of "effective"
             # system instruction is delegated to the adapter, which still
             # chooses the init-provided value if there is one.
-            adapter: GeminiLLMAdapter = self.get_llm_adapter()
+            adapter = self.get_llm_adapter()
             params = adapter.get_llm_invocation_params(
-                self._context, system_instruction=self._system_instruction_from_init
+                self._context, system_instruction=assert_given(self._system_instruction_from_init)
             )
             system_instruction = params["system_instruction"]
             tools = params["tools"]
@@ -810,7 +814,10 @@ class GeminiLiveLLMService(LLMService):
                         "No messages found in initial context; seeding with system instruction to trigger bot response."
                     )
                     self._context.add_message(
-                        {"role": "system", "content": self._system_instruction_from_init}
+                        {
+                            "role": "system",
+                            "content": assert_given(self._system_instruction_from_init),
+                        }
                     )
                 else:
                     logger.warning(
@@ -835,7 +842,7 @@ class GeminiLiveLLMService(LLMService):
 
     async def _process_completed_function_calls(self, send_new_results: bool):
         # Check for set of completed function calls in the context
-        adapter: GeminiLLMAdapter = self.get_llm_adapter()
+        adapter = self.get_llm_adapter()
         messages = adapter.get_llm_invocation_params(self._context).get("messages", [])
         for message in messages:
             if message.parts:
@@ -929,22 +936,25 @@ class GeminiLiveLLMService(LLMService):
             logger.info("Connecting to Gemini service")
         try:
             # Assemble basic configuration
+            modalities = assert_given(self._settings.modalities)
+            media_resolution = assert_given(self._settings.media_resolution)
+            language = assert_given(self._settings.language)
             config = LiveConnectConfig(
                 generation_config=GenerationConfig(
-                    frequency_penalty=self._settings.frequency_penalty,
-                    max_output_tokens=self._settings.max_tokens,
-                    presence_penalty=self._settings.presence_penalty,
-                    temperature=self._settings.temperature,
-                    top_k=self._settings.top_k,
-                    top_p=self._settings.top_p,
-                    response_modalities=[Modality(self._settings.modalities.value)],
+                    frequency_penalty=assert_given(self._settings.frequency_penalty),
+                    max_output_tokens=assert_given(self._settings.max_tokens),
+                    presence_penalty=assert_given(self._settings.presence_penalty),
+                    temperature=assert_given(self._settings.temperature),
+                    top_k=assert_given(self._settings.top_k),
+                    top_p=assert_given(self._settings.top_p),
+                    response_modalities=[Modality(modalities.value)],
                     speech_config=SpeechConfig(
                         voice_config=VoiceConfig(
-                            prebuilt_voice_config={"voice_name": self._settings.voice}
+                            prebuilt_voice_config={"voice_name": assert_given(self._settings.voice)}
                         ),
-                        language_code=self._settings.language,
+                        language_code=language,
                     ),
-                    media_resolution=MediaResolution(self._settings.media_resolution.value),
+                    media_resolution=MediaResolution(media_resolution.value),
                 ),
                 input_audio_transcription=AudioTranscriptionConfig(),
                 output_audio_transcription=AudioTranscriptionConfig(),
@@ -957,7 +967,7 @@ class GeminiLiveLLMService(LLMService):
                 config.history_config = history_config
 
             # Add context window compression to configuration, if enabled
-            cwc = self._settings.context_window_compression or {}
+            cwc = assert_given(self._settings.context_window_compression) or {}
             if cwc.get("enabled", False):
                 compression_config = ContextWindowCompressionConfig()
 
@@ -984,9 +994,9 @@ class GeminiLiveLLMService(LLMService):
                 config.proactivity = self._settings.proactivity
 
             # Add VAD configuration to configuration, if provided
-            if self._settings.vad:
+            vad_params = assert_given(self._settings.vad)
+            if vad_params:
                 vad_config = AutomaticActivityDetection()
-                vad_params = self._settings.vad
                 has_vad_settings = False
 
                 # Only add parameters that are explicitly set
@@ -1019,12 +1029,13 @@ class GeminiLiveLLMService(LLMService):
             # Add system instruction and tools to configuration, if provided.
             # These settings from the context take precedence over the ones
             # provided at initialization time.
-            adapter: GeminiLLMAdapter = self.get_llm_adapter()
+            adapter = self.get_llm_adapter()
             system_instruction = None
             tools = None
             if self._context:
                 params = adapter.get_llm_invocation_params(
-                    self._context, system_instruction=self._system_instruction_from_init
+                    self._context,
+                    system_instruction=assert_given(self._system_instruction_from_init),
                 )
                 system_instruction = params["system_instruction"]
                 tools = params["tools"]
@@ -1046,9 +1057,10 @@ class GeminiLiveLLMService(LLMService):
             await self.push_error(error_msg=f"Initialization error: {e}", exception=e)
 
     async def _connection_task_handler(self, config: LiveConnectConfig):
-        async with self._client.aio.live.connect(
-            model=self._settings.model, config=config
-        ) as session:
+        model = assert_given(self._settings.model)
+        if model is None:
+            raise ValueError("Gemini Live model must be specified")
+        async with self._client.aio.live.connect(model=model, config=config) as session:
             logger.info("Connected to Gemini service")
 
             # Mark connection start time
@@ -1262,8 +1274,60 @@ class GeminiLiveLLMService(LLMService):
         except Exception as e:
             await self._handle_send_error(e)
 
-    async def _create_initial_response(self):
-        """Create initial response based on context history."""
+    async def _create_initial_response(self, for_reconnect: bool = False):
+        """Seed conversation history and optionally trigger an initial model response.
+
+        Behavior by case:
+
+        Initial connection, ``_inference_on_context_initialization=True``:
+            Seed with ``turn_complete=True`` so the model generates a first
+            response to the trailing user turn. On Gemini 3.x we also send a
+            realtime-input nudge (the model won't actually run inference
+            without one).
+
+        Initial connection, ``_inference_on_context_initialization=False``:
+            Seed with ``turn_complete=False`` (no response yet). On Gemini 2.5
+            we set ``_needs_initial_turn_complete_message`` so the next
+            ``user_stopped_speaking`` sends an explicit ``turn_complete=True``;
+            otherwise 2.5 ignores the seeded history when the user's first
+            input is audio. Gemini 3.x merges seeded history and audio
+            cleanly and needs no workaround.
+
+            Note: on Gemini 2.5 the first user utterance after this kind of
+            seed still produces one "naive" response (context-ignoring) that
+            is immediately followed by a context-aware response. This is
+            Gemini 2.5's documented audio-input / history-recall limitation
+            (https://discuss.ai.google.dev/t/audio-input-cannot-trigger-history-recall-in-gemini-live-api-only-text-input-works/111617).
+            It's tolerable at the start of a conversation because the first
+            utterance is usually a greeting.
+
+        Reconnect, Gemini 3.x:
+            Seed with ``turn_complete=False`` — no workaround needed, the
+            next user utterance gets a single history-aware response.
+
+        Reconnect, Gemini 2.5:
+            Force ``turn_complete=True`` on the seed so the model generates
+            an inference over the seeded history immediately (typically a
+            recap/continuation of the conversation). This works around the
+            same Gemini 2.5 audio-input / history-recall limitation noted
+            above
+            (https://discuss.ai.google.dev/t/audio-input-cannot-trigger-history-recall-in-gemini-live-api-only-text-input-works/111617):
+            if we seeded without triggering inference, the user's next
+            utterance — mid-conversation — would briefly hear the bot act
+            like it had forgotten everything before recovering on the
+            following turn. Forcing a recap-style response up front avoids
+            that jarring UX.
+
+        Seed shape:
+            Gemini 2.5's ``send_client_content`` requires the seed's final
+            turn to be a user turn. When it isn't (e.g. on reconnect where
+            the bot had finished speaking before the disconnect), we append
+            a blank user turn to satisfy the server. Gemini 3.x has no such
+            requirement.
+
+        Args:
+            for_reconnect: When True, we're re-seeding after a reconnect.
+        """
         if self._disconnecting:
             return
 
@@ -1271,32 +1335,48 @@ class GeminiLiveLLMService(LLMService):
             self._run_llm_when_session_ready = True
             return
 
-        adapter: GeminiLLMAdapter = self.get_llm_adapter()
+        adapter = self.get_llm_adapter()
         messages = adapter.get_llm_invocation_params(self._context).get("messages", [])
         if not messages:
             # No messages to seed convo with, so we're ready for realtime input right away
             self._ready_for_realtime_input = True
             return
 
+        # On reconnect, Gemini 2.5 needs us to force an inference so the user
+        # doesn't momentarily experience a "forgotten" assistant (see
+        # docstring). Gemini 3.x doesn't have that limitation. In the
+        # non-reconnect case we honor the configured setting.
+        if for_reconnect:
+            trigger_inference = not self._is_gemini_3
+        else:
+            trigger_inference = self._inference_on_context_initialization
+
         logger.debug(f"Creating initial response: {messages}")
+
+        # Enforce Gemini 2.5's "seed must end with user turn" requirement.
+        seed_messages = messages
+        if not self._is_gemini_3:
+            last_role = getattr(messages[-1], "role", None)
+            if last_role != "user":
+                seed_messages = messages + [Content(role="user", parts=[Part(text=" ")])]
 
         await self.start_ttfb_metrics()
 
         try:
             await self._session.send_client_content(
-                turns=messages, turn_complete=self._inference_on_context_initialization
+                turns=seed_messages,
+                turn_complete=trigger_inference,
             )
             # Gemini 3.x wants turn_complete=True, but also won't run inference without a realtime input
-            if self._is_gemini_3 and self._inference_on_context_initialization:
+            if self._is_gemini_3 and trigger_inference:
                 await self._session.send_realtime_input(text=" ")
         except Exception as e:
             await self._handle_send_error(e)
 
-        # If we're generating a response right away upon initializing
-        # conversation history, set a flag saying that we'll need a turn
-        # complete message when the user stops speaking.
-        # This is a quirky workaround, and not one that Gemini 3 needs.
-        if not self._inference_on_context_initialization and not self._is_gemini_3:
+        # Gemini 2.5-only workaround: when we've seeded without triggering
+        # inference, flag that the next user_stopped_speaking should send
+        # turn_complete=True so 2.5 picks up the seeded history.
+        if not trigger_inference and not self._is_gemini_3:
             self._needs_initial_turn_complete_message = True
 
         self._ready_for_realtime_input = True
@@ -1314,7 +1394,7 @@ class GeminiLiveLLMService(LLMService):
         # Create a throwaway context just for the purpose of getting messages
         # in the right format
         context = LLMContext(messages=messages_list)
-        adapter: GeminiLLMAdapter = self.get_llm_adapter()
+        adapter = self.get_llm_adapter()
         messages = adapter.get_llm_invocation_params(context).get("messages", [])
 
         if not messages:
@@ -1363,13 +1443,12 @@ class GeminiLiveLLMService(LLMService):
             self._ready_for_realtime_input = True
         elif self._context:
             # Reconnect without session resumption (e.g. error occurred
-            # before server sent a resumption handle).
-            # TODO: ideally we'd re-send conversation history here via
-            # _create_initial_response(), but that currently doesn't handle
-            # the reconnect case properly. This should be very rare — the
-            # connection would have to drop before we've received our first
-            # session_resumption_handle from the server.
-            self._ready_for_realtime_input = True
+            # before server sent a resumption handle): re-seed conversation
+            # history so the new session retains full context before
+            # accepting input. We route through _create_initial_response so
+            # that the seed/commit dance stays in one place. See that
+            # method's docstring for the reconnect-specific behavior.
+            await self._create_initial_response(for_reconnect=True)
         else:
             # Initial connection: session is ready before context has
             # arrived. Nothing to do — _handle_context will call

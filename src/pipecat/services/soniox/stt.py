@@ -25,7 +25,7 @@ from pipecat.frames.frames import (
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
-from pipecat.services.settings import NOT_GIVEN, STTSettings, _NotGiven
+from pipecat.services.settings import NOT_GIVEN, STTSettings, _NotGiven, assert_given
 from pipecat.services.stt_latency import SONIOX_TTFS_P99
 from pipecat.services.stt_service import WebsocketSTTService
 from pipecat.transcriptions.language import Language, resolve_language
@@ -402,7 +402,7 @@ class SonioxSTTService(WebsocketSTTService):
         await super().cancel(frame)
         await self._disconnect()
 
-    async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
+    async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame | None, None]:
         """Send audio data to Soniox STT Service.
 
         Args:
@@ -412,7 +412,10 @@ class SonioxSTTService(WebsocketSTTService):
             Frame: None (transcription results come via WebSocket callbacks).
         """
         if self._websocket and self._websocket.state is State.OPEN:
-            await self._websocket.send(audio)
+            try:
+                await self._websocket.send(audio)
+            except Exception as e:
+                logger.warning(f"{self}: send failed: {e}")
 
         yield None
 
@@ -501,7 +504,7 @@ class SonioxSTTService(WebsocketSTTService):
                 "num_channels": self._num_channels,
                 "enable_endpoint_detection": enable_endpoint_detection,
                 "sample_rate": self.sample_rate,
-                "language_hints": _prepare_language_hints(s.language_hints),
+                "language_hints": _prepare_language_hints(assert_given(s.language_hints)),
                 "language_hints_strict": s.language_hints_strict,
                 "context": context,
                 "enable_speaker_diarization": s.enable_speaker_diarization,
@@ -645,4 +648,7 @@ class SonioxSTTService(WebsocketSTTService):
         Args:
             silence: Silent PCM audio bytes (unused, Soniox uses a protocol message).
         """
+        if self._websocket is None:
+            logger.warning(f"{self}: websocket unavailable, skipping keepalive")
+            return
         await self._websocket.send(KEEPALIVE_MESSAGE)

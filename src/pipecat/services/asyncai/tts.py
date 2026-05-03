@@ -42,14 +42,17 @@ except ModuleNotFoundError as e:
     raise Exception(f"Missing module: {e}")
 
 
-def language_to_async_language(language: Language) -> str | None:
+def language_to_async_language(language: Language) -> str:
     """Convert a Language enum to Async language code.
 
     Args:
         language: The Language enum value to convert.
 
     Returns:
-        The corresponding Async language code, or None if not supported.
+        The corresponding service language code. If ``language`` is not in
+        the verified mapping, falls back to the base language code (e.g.,
+        ``en`` from ``en-US``) and logs a warning (via
+        ``resolve_language(..., use_base_code=True)``).
     """
     LANGUAGE_MAP = {
         Language.EN: "en",
@@ -449,7 +452,7 @@ class AsyncAITTSService(WebsocketTTSService):
         await super().on_audio_context_completed(context_id)
 
     @traced_tts
-    async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
+    async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
         """Generate speech from text using Async API websocket endpoint.
 
         Args:
@@ -620,7 +623,7 @@ class AsyncAIHttpTTSService(TTSService):
         self._output_sample_rate = self.sample_rate
 
     @traced_tts
-    async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
+    async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame | None, None]:
         """Generate speech from text using Async's HTTP streaming API.
 
         Args:
